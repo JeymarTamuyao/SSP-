@@ -39,8 +39,8 @@ void setup() {
   }
   Serial.println("AS7341 sensor initialized.");
 
-  // Set sensor settings for integration time, step, and gain
-  as7341.setATIME(100);  // 100 * 2.78 ms = ~278 ms integration time
+  // Set sensor settings
+  as7341.setATIME(150);  // Integration time (150 * 2.78 ms ≈ 417 ms)
   as7341.setASTEP(999);  // Integration step
   as7341.setGain(AS7341_GAIN_256X);
 
@@ -63,70 +63,71 @@ void setup() {
 }
 
 void loop() {
-  uint16_t readings[12];
+  uint16_t readings[11];         // Store fluorescence readings
+  uint16_t ambientReadings[11];  // Store ambient light readings
 
-  // Turn on the excitation LED
-  digitalWrite(EXCITATION_LED, HIGH);
-
-  // Read all spectral channels from AS7341
-  if (!as7341.readAllChannels(readings)) {
-    Serial.println("Error reading AS7341 channels!");
-    digitalWrite(EXCITATION_LED, LOW); // Turn off the LED on error
+  // **Step 1: Measure ambient light (LED OFF)**
+  digitalWrite(EXCITATION_LED, LOW);
+  delay(1500);
+  if (!as7341.readAllChannels(ambientReadings)) {
+    Serial.println("Error reading ambient light!");
     return;
   }
 
-  // Turn off the excitation LED after reading
+  // **Step 2: Measure fluorescence (LED ON)**
+  digitalWrite(EXCITATION_LED, HIGH);
+  delay(1500);
+  if (!as7341.readAllChannels(readings)) {
+    digitalWrite(EXCITATION_LED, LOW);
+    Serial.println("Error reading fluorescence!");
+    return;
+  }
   digitalWrite(EXCITATION_LED, LOW);
 
-  // Extract the red (680 nm) value (Channel 5)
-  uint16_t redValue = readings[5];
-  Serial.print("Red (680 nm) value: ");
-  Serial.println(redValue);
+  // **Step 3: Corrected red fluorescence (680 nm, Channel 7)**
+  uint16_t rawRed = readings[7];               // Fluorescence with LED
+  uint16_t ambientRed = ambientReadings[7];    // Ambient interference
+  uint16_t correctedRed = (rawRed > ambientRed) ? (rawRed - ambientRed) : 0;
 
-  // Calculate the estimated chlorophyll concentration using the formula
-  float chlorophyllConcentration = (redValue - 10.723) / 3.4571;
+  Serial.print("Corrected Red (680 nm): ");
+  Serial.println(correctedRed);
 
-  // Check if the chlorophyll concentration is negative or zero
-  if (chlorophyllConcentration <= 0) {
-    chlorophyllConcentration = 0;
-  }
+  // **Step 4: Chlorophyll estimation**
+  float chlorophyllConcentration = (correctedRed - 1.88) / 0.484;
+  if (chlorophyllConcentration < 0) chlorophyllConcentration = 0;
 
-  Serial.print("Estimated Chlorophyll Concentration: ");
+  Serial.print("Estimated Chlorophyll: ");
   Serial.print(chlorophyllConcentration, 2);
   Serial.println(" µg/L");
 
-  // Read GPS data
+  // **Step 5: Read GPS Data**
   String gpsData = readGPS();
-  Serial.print("GPS Data: ");
-  Serial.println(gpsData);
+  Serial.println("GPS Data: " + gpsData);
 
-  // Prepare data for transmission in the desired format with authentication key
-  String dataToSend = AUTH_KEY + "RED:" + String(redValue) + 
+  // **Step 6: Prepare Data for LoRa Transmission**
+  String dataToSend = AUTH_KEY + "RED:" + String(correctedRed) + 
                       ",CHL:" + String(chlorophyllConcentration, 2) + 
                       ",LAT:" + String(gps.location.lat(), 8) + 
                       ",LON:" + String(gps.location.lng(), 8);
 
-  // Send data via LoRa
+  // **Step 7: Send Data via LoRa**
   LoRa.beginPacket();
   LoRa.print(dataToSend);
   LoRa.endPacket();
-
   Serial.println("Data sent via LoRa: " + dataToSend);
 
   delay(1500); // Adjust as needed
 }
 
+// **Optimized GPS Reading Function**
 String readGPS() {
-  String gpsString = "";
-  while (gpsSerial.available() > 0) {
+  String gpsString = "0";  // Default to "0" if no update
+  while (gpsSerial.available()) {
     gps.encode(gpsSerial.read());
     if (gps.location.isUpdated()) {
-      gpsString = "Lat: " + String(gps.location.lat(), 8) + 
-                  ", Lon: " + String(gps.location.lng(), 8);
+      gpsString = "Lat:" + String(gps.location.lat(), 8) + 
+                  ",Lon:" + String(gps.location.lng(), 8);
     }
-  }
-  if (gpsString == "") {
-    gpsString = "0";
   }
   return gpsString;
 }
